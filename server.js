@@ -71,7 +71,7 @@ const startStreaming = (audioUrl, res) => {
     "-c:a",
     "libopus",
     "-b:a",
-    "128K",
+    "512K",
     "-",
   ]);
 
