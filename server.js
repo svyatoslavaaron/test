@@ -81,13 +81,15 @@ const startStreaming = (audioUrl, res, attempt = 0) => {
       "-c:a",
       "libopus",
       "-b:a",
-      "512K",
+      "128K",
       "-",
     ]);
 
-    // Set headers for audio streaming
-    res.setHeader("Content-Type", "audio/opus");
-    res.setHeader("Transfer-Encoding", "chunked");
+    if (!res.headersSent) {
+      // Set headers for audio streaming
+      res.setHeader("Content-Type", "audio/opus");
+      res.setHeader("Transfer-Encoding", "chunked");
+    }
 
     // Pipe yt-dlp output to ffmpeg input and ffmpeg output to response
     pipeline(ytDlpProcess.stdout, ffmpegProcess.stdin, (err) => {
