@@ -4,7 +4,7 @@
   "description": "Stream audio from YouTube using yt-dlp and ffmpeg",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node multifile.js"
   },
   "dependencies": {
     "express": "^4.17.1",
