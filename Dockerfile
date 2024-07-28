@@ -26,4 +26,4 @@ COPY . .
 EXPOSE 4002
 
 # Command to run the app
-CMD ["node", "server.js"]
+CMD ["node", "multifile.js"]
