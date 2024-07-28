@@ -141,6 +141,31 @@ app.get("/audio", async (req, res) => {
   });
 });
 
+// Endpoint to stop streaming
+app.get("/stop-stream", (req, res) => {
+  try {
+    const stopProcess = (process, name) => {
+      if (process) {
+        process.kill("SIGTERM");
+        setTimeout(() => {
+          if (process.exitCode === null) {
+            process.kill("SIGKILL");
+          }
+        }, 5000);
+        logger.info(`${name} process stopped`);
+      }
+    };
+
+    stopProcess(ytDlpProcess, "yt-dlp");
+    stopProcess(ffmpegProcess, "ffmpeg");
+
+    res.json({ message: "Stream stopped." });
+  } catch (error) {
+    logger.error(`Error stopping stream: ${error.message}`);
+    res.status(500).json({ error: "Failed to stop stream" });
+  }
+});
+
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
