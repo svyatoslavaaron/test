@@ -1,13 +1,12 @@
-# Use the latest stable Node.js runtime as the base image
-FROM node:18
+# Use the latest Ubuntu as the base image
+FROM ubuntu:22.04
 
-# Install Python 3.10, ffmpeg, and yt-dlp
+# Install Node.js, Python 3.10, ffmpeg, curl, and yt-dlp
 RUN apt-get update && \
-    apt-get install -y python3.10 python3.10-venv python3.10-dev && \
-    apt-get install -y ffmpeg && \
-    apt-get install -y curl && \
+    apt-get install -y nodejs npm python3.10 python3.10-venv python3.10-dev ffmpeg curl && \
     curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10 && \
-    python3.10 -m pip install yt-dlp
+    python3.10 -m pip install --upgrade pip && \
+    python3.10 -m pip install --upgrade yt-dlp
 
 # Set the working directory in the container
 WORKDIR /usr/src/app
@@ -15,7 +14,7 @@ WORKDIR /usr/src/app
 # Copy package.json and package-lock.json
 COPY package*.json ./
 
-# Install dependencies
+# Install Node.js dependencies
 RUN npm install
 
 # Copy the rest of the application code
