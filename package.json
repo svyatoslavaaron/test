@@ -9,6 +9,7 @@
   "dependencies": {
     "express": "^4.17.1",
     "child_process": "^1.0.2",
+    "p-limit": "^6.1.0",
     "winston": "^3.13.1"
   },
   "engines": {
