@@ -7,10 +7,9 @@
     "start": "node multifile.js"
   },
   "dependencies": {
-    "express": "^4.17.1",
-    "child_process": "^1.0.2",
-    "p-limit": "^6.1.0",
-    "winston": "^3.13.1"
+     "express": "^4.17.1",
+    "p-limit": "^3.0.2",
+    "winston": "^3.3.3"
   },
   "engines": {
     "node": ">=14.0.0"
