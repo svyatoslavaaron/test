@@ -1,19 +1,13 @@
 {
-  "name": "youtube-audio-stream",
+  "name": "your-app-name",
   "version": "1.0.0",
-  "description": "Stream audio from YouTube using yt-dlp and ffmpeg",
-  "main": "server.js",
+  "main": "multifile.mjs",
   "scripts": {
-    "start": "node multifile.js"
+    "start": "node multifile.mjs"
   },
   "dependencies": {
-     "express": "^4.17.1",
+    "express": "^4.17.1",
     "p-limit": "^3.0.2",
     "winston": "^3.3.3"
-  },
-  "engines": {
-    "node": ">=14.0.0"
-  },
-  "author": "Your Name",
-  "license": "MIT"
+  }
 }
