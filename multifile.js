@@ -3,9 +3,7 @@ const { spawn } = require("child_process");
 const app = express();
 const port = 4002;
 const winston = require("winston");
-const path = require("path");
 const fs = require("fs");
-const { pipeline } = require("stream");
 
 const logger = winston.createLogger({
   level: "info",
@@ -45,100 +43,115 @@ const cleanup = () => {
   }
 };
 
-app.get("/audio", async (req, res) => {
-  const videoIds = req.query.videoId;
-  const format = req.query.format || "opus";
-  if (!videoIds) {
-    return res.status(400).send("Video IDs are required");
+const retry = (fn, retries = 3) => async (...args) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn(...args);
+    } catch (error) {
+      logger.error(`Attempt ${i + 1} failed: ${error.message}`);
+      if (i === retries - 1) throw error;
+    }
   }
+};
 
-  const ids = videoIds.split(",");
-  if (ids.length < 2) {
-    return res.status(400).send("At least two Video IDs are required");
-  }
+const downloadAudio = (audioUrl, index) => {
+  return new Promise((resolve, reject) => {
+    const ytDlpProcess = spawn("yt-dlp", [
+      "-f",
+      "bestaudio",
+      "--no-playlist",
+      "--output",
+      `audio${index}.%(ext)s`,
+      audioUrl,
+    ]);
 
-  const audioUrls = ids.map((id) => `https://www.youtube.com/watch?v=${id}`);
-  logger.info(`Starting audio stream for URLs: ${audioUrls.join(", ")}`);
+    ytDlpProcesses.push(ytDlpProcess);
 
+    ytDlpProcess.stderr.on("data", (chunk) => {
+      logger.error(`yt-dlp stderr: ${chunk.toString()}`);
+    });
+
+    ytDlpProcess.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`yt-dlp process exited with code ${code}`));
+      } else {
+        resolve(`audio${index}.m4a`); // Assuming m4a format is downloaded
+      }
+    });
+
+    ytDlpProcess.on("error", (err) => {
+      reject(err);
+    });
+  });
+};
+
+const startStreaming = async (audioUrls, res) => {
   try {
     // Download each audio stream
     const audioFiles = await Promise.all(
-      audioUrls.map((url, index) => {
-        return new Promise((resolve, reject) => {
-          const ytDlpProcess = spawn("yt-dlp", [
-            "-f",
-            "bestaudio",
-            "--no-playlist",
-            "--output",
-            `audio${index}.%(ext)s`,
-            url,
-          ]);
-
-          ytDlpProcesses.push(ytDlpProcess);
-
-          ytDlpProcess.stderr.on("data", (chunk) => {
-            logger.error(`yt-dlp stderr: ${chunk.toString()}`);
-          });
-
-          ytDlpProcess.on("exit", (code) => {
-            if (code !== 0) {
-              reject(new Error(`yt-dlp process exited with code ${code}`));
-            } else {
-              resolve(`audio${index}.m4a`); // Assuming m4a format is downloaded
-            }
-          });
-
-          ytDlpProcess.on("error", (err) => {
-            reject(err);
-          });
-        });
-      })
+      audioUrls.map((url, index) => retry(downloadAudio)(url, index))
     );
 
-    // Create a temporary file for ffmpeg concat list
-    const concatListFile = "concat_list.txt";
-    fs.writeFileSync(concatListFile, audioFiles.map(file => `file '${file}'`).join("\n"));
+    if (audioFiles.length === 1) {
+      // If only one audio file, directly stream it
+      const audioFile = audioFiles[0];
+      ffmpegProcess = spawn("ffmpeg", [
+        "-i",
+        audioFile,
+        "-f",
+        "opus",
+        "-c:a",
+        "libopus",
+        "-b:a",
+        "256K",
+        "-",
+      ]);
+    } else {
+      // Create a temporary file for ffmpeg concat list
+      const concatListFile = "concat_list.txt";
+      fs.writeFileSync(concatListFile, audioFiles.map(file => `file '${file}'`).join("\n"));
 
-    // Concatenate audio files
-    ffmpegProcess = spawn("ffmpeg", [
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      concatListFile,
-      "-f",
-      format,
-      "-c:a",
-      format === "opus" ? "libopus" : "libmp3lame",
-      "-b:a",
-      format === "opus" ? "256K" : "192K",
-      "-",
-    ]);
+      // Concatenate audio files
+      ffmpegProcess = spawn("ffmpeg", [
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        concatListFile,
+        "-f",
+        "opus",
+        "-c:a",
+        "libopus",
+        "-b:a",
+        "256K",
+        "-",
+      ]);
+    }
 
-    res.setHeader("Content-Type", format === "opus" ? "audio/opus" : "audio/mp3");
+    res.setHeader("Content-Type", "audio/opus");
 
-    pipeline(ffmpegProcess.stdout, res, (err) => {
-      if (err) {
-        logger.error(`Pipeline error: ${err.message}`);
-      }
-      cleanup();
-      // Clean up temporary audio files and list file
-      audioFiles.forEach((file) => fs.unlinkSync(file));
-      fs.unlinkSync(concatListFile);
-    });
+    ffmpegProcess.stdout.pipe(res);
 
     ffmpegProcess.stderr.on("data", (chunk) => {
       logger.error(`FFmpeg stderr: ${chunk.toString()}`);
     });
 
+    ffmpegProcess.on("close", () => {
+      cleanup();
+      // Clean up temporary audio files and list file
+      audioFiles.forEach((file) => fs.unlinkSync(file));
+      if (audioFiles.length > 1 && fs.existsSync("concat_list.txt")) {
+        fs.unlinkSync("concat_list.txt");
+      }
+    });
+
     res.on("close", () => {
-      logger.info("Client disconnected, cleaning up processes");
       cleanup();
       // Clean up temporary audio files and list file if not already deleted
       audioFiles.forEach((file) => fs.unlinkSync(file));
-      if (fs.existsSync(concatListFile)) {
-        fs.unlinkSync(concatListFile);
+      if (audioFiles.length > 1 && fs.existsSync("concat_list.txt")) {
+        fs.unlinkSync("concat_list.txt");
       }
     });
 
@@ -147,8 +160,8 @@ app.get("/audio", async (req, res) => {
       cleanup();
       // Clean up temporary audio files and list file if not already deleted
       audioFiles.forEach((file) => fs.unlinkSync(file));
-      if (fs.existsSync(concatListFile)) {
-        fs.unlinkSync(concatListFile);
+      if (audioFiles.length > 1 && fs.existsSync("concat_list.txt")) {
+        fs.unlinkSync("concat_list.txt");
       }
     });
 
@@ -158,8 +171,8 @@ app.get("/audio", async (req, res) => {
       cleanup();
       // Clean up temporary audio files and list file if not already deleted
       audioFiles.forEach((file) => fs.unlinkSync(file));
-      if (fs.existsSync(concatListFile)) {
-        fs.unlinkSync(concatListFile);
+      if (audioFiles.length > 1 && fs.existsSync("concat_list.txt")) {
+        fs.unlinkSync("concat_list.txt");
       }
     });
   } catch (err) {
@@ -167,6 +180,26 @@ app.get("/audio", async (req, res) => {
     res.status(500).send("Failed to process audio");
     cleanup();
   }
+};
+
+app.get("/audio", (req, res) => {
+  const videoIds = req.query.videoId;
+  if (!videoIds) {
+    return res.status(400).send("Video IDs are required");
+  }
+
+  const ids = videoIds.split(",");
+  if (ids.length === 0) {
+    return res.status(400).send("At least one Video ID is required");
+  }
+
+  const audioUrls = ids.map((id) => `https://www.youtube.com/watch?v=${id}`);
+  logger.info(`Starting audio stream for URLs: ${audioUrls.join(", ")}`);
+
+  startStreaming(audioUrls, res).catch((err) => {
+    logger.error(`Failed to start streaming after retries: ${err.message}`);
+    res.status(500).send("Failed to start streaming");
+  });
 });
 
 // Endpoint to stop streaming
