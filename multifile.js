@@ -1,9 +1,10 @@
-const express = require("express");
-const { spawn } = require("child_process");
+import express from "express";
+import { spawn } from "child_process";
+import winston from "winston";
+import pLimit from "p-limit";
+
 const app = express();
 const port = 4002;
-const winston = require("winston");
-const pLimit = require("p-limit");
 
 // Create a logger instance
 const logger = winston.createLogger({
@@ -54,14 +55,14 @@ const processVideo = async (videoUrl) => {
       videoUrl,
     ]);
 
-    let ytDlpOutput = "";
+    let ytDlpOutput = '';
 
     ytDlpProcess.stdout.on("data", (chunk) => {
       ytDlpOutput += chunk.toString();
       // Log progress information
-      if (ytDlpOutput.includes("[download]")) {
+      if (ytDlpOutput.includes('[download]')) {
         logger.info(`yt-dlp download progress: ${ytDlpOutput}`);
-        ytDlpOutput = ""; // Clear output after logging
+        ytDlpOutput = ''; // Clear output after logging
       }
     });
 
@@ -130,6 +131,7 @@ const startStreaming = async (videoUrls, res) => {
           logger.info("Client disconnected, cleaning up processes");
           cleanup([ytDlpProcess, ffmpegProcess]);
         });
+
       } catch (error) {
         logger.error(`Failed to process video ${videoUrl}: ${error.message}`);
         res.status(500).send(`Failed to process video: ${videoUrl}`);
