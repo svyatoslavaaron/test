@@ -197,7 +197,12 @@ app.get("/stop-stream", (req, res) => {
       }
     };
 
-    stopProcess(ytDlpProcess, "yt-dlp");
+    // Stop all yt-dlp processes
+    ytDlpProcesses.forEach((ytDlpProcess, index) => {
+      stopProcess(ytDlpProcess, `yt-dlp-${index}`);
+    });
+
+    // Stop ffmpeg process
     stopProcess(ffmpegProcess, "ffmpeg");
 
     res.json({ message: "Stream stopped." });
