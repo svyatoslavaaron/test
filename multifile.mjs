@@ -2,9 +2,13 @@ import express from "express";
 import { spawn } from "child_process";
 import winston from "winston";
 import pLimit from "p-limit";
+import fs from "fs";
+import path from "path";
 
 const app = express();
 const port = 4002;
+
+const cacheDir = path.join(process.cwd(), 'cache');
 
 const logger = winston.createLogger({
   level: "info",
@@ -39,7 +43,7 @@ const cleanup = (processes) => {
   });
 };
 
-const processVideo = async (videoUrl) => {
+const processVideo = async (videoUrl, cacheFilePath) => {
   return new Promise((resolve, reject) => {
     ytDlpProcess = spawn("yt-dlp", [
       "-f",
@@ -49,6 +53,10 @@ const processVideo = async (videoUrl) => {
       "-",
       videoUrl,
     ]);
+
+    const writeStream = fs.createWriteStream(cacheFilePath);
+
+    ytDlpProcess.stdout.pipe(writeStream);
 
     let ytDlpOutput = '';
 
@@ -72,7 +80,7 @@ const processVideo = async (videoUrl) => {
       if (code !== 0) {
         reject(new Error(`yt-dlp process exited with code ${code}`));
       } else {
-        resolve(ytDlpProcess.stdout);
+        resolve(cacheFilePath);
       }
     });
   });
@@ -82,35 +90,47 @@ const startStreaming = async (videoUrls, res) => {
   for (const videoUrl of videoUrls) {
     await limit(async () => {
       try {
-        const ytDlpStream = await processVideo(videoUrl);
+        const videoId = new URL(videoUrl).searchParams.get("v");
+        const cacheFilePath = path.join(cacheDir, `${videoId}.opus`);
+
+        if (fs.existsSync(cacheFilePath)) {
+          logger.info(`Serving from cache: ${cacheFilePath}`);
+          const readStream = fs.createReadStream(cacheFilePath);
+          res.setHeader("Content-Type", "audio/opus");
+          readStream.pipe(res);
+          return;
+        }
+
+        const ytDlpStream = await processVideo(videoUrl, cacheFilePath);
 
         ffmpegProcess = spawn("ffmpeg", [
           "-i",
-          "pipe:0",
+          ytDlpStream,
           "-f",
           "opus",
           "-c:a",
           "libopus",
           "-b:a",
           "256K",
-          "-",
+          cacheFilePath,
         ]);
 
-        res.setHeader("Content-Type", "audio/opus");
-        res.setHeader("Transfer-Encoding", "chunked");
-
-        ytDlpStream.pipe(ffmpegProcess.stdin);
-
         ffmpegProcess.stdout.on("data", (chunk) => {
-          res.write(chunk);
+          logger.info(`FFmpeg progress: ${chunk.toString()}`);
         });
 
         ffmpegProcess.stderr.on("data", (chunk) => {
           logger.error(`FFmpeg stderr: ${chunk.toString()}`);
         });
 
-        ffmpegProcess.on("close", () => {
-          res.end();
+        ffmpegProcess.on("close", (code) => {
+          if (code === 0) {
+            const readStream = fs.createReadStream(cacheFilePath);
+            res.setHeader("Content-Type", "audio/opus");
+            readStream.pipe(res);
+          } else {
+            res.status(500).send("Failed to process audio");
+          }
           cleanup([ytDlpProcess, ffmpegProcess]);
         });
 
