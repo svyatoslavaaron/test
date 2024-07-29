@@ -3,6 +3,7 @@ const { spawn } = require("child_process");
 const app = express();
 const port = 4002;
 const winston = require("winston");
+const fs = require("fs");
 
 const logger = winston.createLogger({
   level: "info",
@@ -22,16 +23,18 @@ const logger = winston.createLogger({
   ],
 });
 
-let ytDlpProcess = null;
+let ytDlpProcesses = [];
 let ffmpegProcess = null;
 
 const cleanup = () => {
-  if (ytDlpProcess) {
-    ytDlpProcess.stdout.removeAllListeners("data");
-    ytDlpProcess.stderr.removeAllListeners("data");
-    ytDlpProcess.kill("SIGTERM");
-    ytDlpProcess = null;
-  }
+  ytDlpProcesses.forEach((ytDlpProcess) => {
+    if (ytDlpProcess) {
+      ytDlpProcess.stdout.removeAllListeners("data");
+      ytDlpProcess.stderr.removeAllListeners("data");
+      ytDlpProcess.kill("SIGTERM");
+    }
+  });
+  ytDlpProcesses = [];
   if (ffmpegProcess) {
     ffmpegProcess.stdout.removeAllListeners("data");
     ffmpegProcess.stderr.removeAllListeners("data");
@@ -40,8 +43,8 @@ const cleanup = () => {
   }
 };
 
-const retry = 
-  (fn, retries = 3) => 
+const retry =
+  (fn, retries = 3) =>
   async (...args) => {
     for (let i = 0; i < retries; i++) {
       try {
@@ -53,126 +56,125 @@ const retry =
     }
   };
 
-const startStreaming = (audioUrl, res) => {
-  ytDlpProcess = spawn("yt-dlp", [
-    "-f",
-    "bestaudio",
-    "--no-playlist",
-    "--progress",
-    "--newline",
-    "--output",
-    "-",
-    audioUrl,
-  ]);
+const downloadAudio = (url, index) => {
+  return new Promise((resolve, reject) => {
+    const ytDlpProcess = spawn("yt-dlp", [
+      "-f",
+      "bestaudio",
+      "--no-playlist",
+      "--progress",
+      "--newline",
+      "--output",
+      `audio${index}.%(ext)s`,
+      url,
+    ]);
 
-  ffmpegProcess = spawn("ffmpeg", [
-    "-i",
-    "pipe:0",
-    "-f",
-    "opus",
-    "-c:a",
-    "libopus",
-    "-b:a",
-    "256K",
-    "-",
-  ]);
+    ytDlpProcesses.push(ytDlpProcess);
 
-  res.setHeader("Content-Type", "audio/opus");
-  res.setHeader("Transfer-Encoding", "chunked");
+    ytDlpProcess.stderr.on("data", (chunk) => {
+      const lines = chunk.toString().split("\n");
+      lines.forEach((line) => {
+        const match = line.match(/(\d+(\.\d+)?)%/);
+        if (match) {
+          const progress = parseFloat(match[1]);
+          logger.info(`yt-dlp progress (audio${index}): ${progress}%`);
+        }
+      });
+    });
 
-  ytDlpProcess.stdout.pipe(ffmpegProcess.stdin);
-
-  const parseYtDlpProgress = (line) => {
-    const match = line.match(/(\d+(\.\d+)?)%/);
-    if (match) {
-      return parseFloat(match[1]);
-    }
-    return null;
-  };
-
-  ytDlpProcess.stderr.on("data", (chunk) => {
-    const lines = chunk.toString().split("\n");
-    lines.forEach(line => {
-      const progress = parseYtDlpProgress(line);
-      if (progress !== null) {
-        logger.info(`yt-dlp progress: ${progress}%`);
+    ytDlpProcess.on("exit", (code) => {
+      if (code !== 0) {
+        reject(new Error(`yt-dlp process exited with code ${code}`));
+      } else {
+        resolve(`audio${index}.m4a`); // Assuming m4a format is downloaded
       }
     });
-  });
 
-  const parseFfmpegProgress = (line) => {
-    const match = line.match(/time=(\d+:\d+:\d+\.\d+)/);
-    if (match) {
-      const time = match[1];
-      const parts = time.split(":");
-      const seconds = (+parts[0]) * 3600 + (+parts[1]) * 60 + (+parts[2]);
-      return seconds;
-    }
-    return null;
-  };
-
-  let totalDuration = null;
-  ytDlpProcess.stdout.on('data', (chunk) => {
-    if (!totalDuration) {
-      const match = chunk.toString().match(/Duration: (\d+:\d+:\d+\.\d+)/);
-      if (match) {
-        const time = match[1];
-        const parts = time.split(":");
-        totalDuration = (+parts[0]) * 3600 + (+parts[1]) * 60 + (+parts[2]);
-      }
-    }
-  });
-
-  ffmpegProcess.stderr.on("data", (chunk) => {
-    const lines = chunk.toString().split("\n");
-    lines.forEach(line => {
-      const time = parseFfmpegProgress(line);
-      if (time !== null && totalDuration !== null) {
-        const progress = (time / totalDuration) * 100;
-        logger.info(`ffmpeg progress: ${progress.toFixed(2)}%`);
-      }
+    ytDlpProcess.on("error", (err) => {
+      reject(err);
     });
-  });
-
-  ffmpegProcess.stdout.on("data", (chunk) => {
-    res.write(chunk);
-  });
-
-  ffmpegProcess.on("close", () => {
-    res.end();
-    cleanup();
-  });
-
-  ffmpegProcess.on("error", (err) => {
-    logger.error(`FFmpeg error: ${err.message}`);
-    res.status(500).send("Failed to process audio");
-    cleanup();
-  });
-
-  ytDlpProcess.on("close", () => {
-    if (!res.headersSent) {
-      res.status(500).send("Failed to fetch audio");
-    }
-    cleanup();
-  });
-
-  ytDlpProcess.on("error", (err) => {
-    logger.error(`yt-dlp error: ${err.message}`);
-    res.status(500).send("Failed to fetch audio");
-    cleanup();
   });
 };
 
+const startStreaming = async (audioUrls, res, format) => {
+  try {
+    const audioFiles = await Promise.all(
+      audioUrls.map((url, index) => retry(downloadAudio)(url, index))
+    );
+
+    const concatFile = `concat:${audioFiles.join("|")}`;
+    ffmpegProcess = spawn("ffmpeg", [
+      "-i",
+      concatFile,
+      "-f",
+      format,
+      "-c:a",
+      format === "opus" ? "libopus" : "libmp3lame",
+      "-b:a",
+      format === "opus" ? "256K" : "192K",
+      "-",
+    ]);
+
+    res.setHeader(
+      "Content-Type",
+      format === "opus" ? "audio/opus" : "audio/mp3"
+    );
+    res.setHeader("Transfer-Encoding", "chunked");
+
+    ffmpegProcess.stdout.on("data", (chunk) => {
+      res.write(chunk);
+    });
+
+    ffmpegProcess.stderr.on("data", (chunk) => {
+      const lines = chunk.toString().split("\n");
+      lines.forEach((line) => {
+        const match = line.match(/time=(\d+:\d+:\d+\.\d+)/);
+        if (match) {
+          const time = match[1];
+          const parts = time.split(":");
+          const seconds =
+            +parts[0] * 3600 + +parts[1] * 60 + +parts[2];
+          logger.info(`ffmpeg progress: ${seconds} seconds`);
+        }
+      });
+      logger.error(`FFmpeg stderr: ${chunk.toString()}`);
+    });
+
+    ffmpegProcess.on("close", () => {
+      res.end();
+      cleanup();
+      // Clean up temporary audio files
+      audioFiles.forEach((file) => fs.unlinkSync(file));
+    });
+
+    ffmpegProcess.on("error", (err) => {
+      logger.error(`FFmpeg error: ${err.message}`);
+      res.status(500).send("Failed to process audio");
+      cleanup();
+    });
+  } catch (error) {
+    logger.error(`Failed to start streaming: ${error.message}`);
+    res.status(500).send("Failed to start streaming");
+    cleanup();
+  }
+};
+
 app.get("/audio", (req, res) => {
-  const videoId = req.query.videoId;
-  if (!videoId) {
-    return res.status(400).send("Video ID is required");
+  const videoIds = req.query.videoId;
+  const format = req.query.format || "opus";
+  if (!videoIds) {
+    return res.status(400).send("Video IDs are required");
   }
 
-  const audioUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  logger.info(`Starting audio stream for URL: ${audioUrl}`);
+  const ids = videoIds.split(",");
+  if (ids.length < 1) {
+    return res.status(400).send("At least one Video ID is required");
+  }
 
-  retry(startStreaming)(audioUrl, res).catch((err) => {
+  const audioUrls = ids.map((id) => `https://www.youtube.com/watch?v=${id}`);
+  logger.info(`Starting audio stream for URLs: ${audioUrls.join(", ")}`);
+
+  startStreaming(audioUrls, res, format).catch((err) => {
     logger.error(`Failed to start streaming after retries: ${err.message}`);
     res.status(500).send("Failed to start streaming");
   });
@@ -205,7 +207,7 @@ app.get("/stop-stream", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
-    ytDlpProcess: ytDlpProcess ? "running" : "stopped",
+    ytDlpProcesses: ytDlpProcesses.length > 0 ? "running" : "stopped",
     ffmpegProcess: ffmpegProcess ? "running" : "stopped",
   });
 });
