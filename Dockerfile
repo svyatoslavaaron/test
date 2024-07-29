@@ -20,6 +20,9 @@ RUN npm install
 # Copy the rest of the application code
 COPY . .
 
+# Create a directory for cached files
+RUN mkdir -p /usr/src/app/cache
+
 # Expose the port the app runs on
 EXPOSE 4002
 
