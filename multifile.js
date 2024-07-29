@@ -4,6 +4,7 @@ const app = express();
 const port = 4002;
 const winston = require("winston");
 const fs = require("fs");
+const os = require("os");
 
 const logger = winston.createLogger({
   level: "info",
@@ -112,6 +113,8 @@ const startStreaming = async (audioUrls, res, format) => {
       format === "opus" ? "libopus" : "libmp3lame",
       "-b:a",
       format === "opus" ? "256K" : "192K",
+      "-threads",
+      os.cpus().length.toString(), // Use all available CPU cores
       "-",
     ]);
 
